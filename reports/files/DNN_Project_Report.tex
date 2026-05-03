@@ -1,0 +1,827 @@
+\documentclass[11pt,a4paper]{article}
+
+% ─── Packages ──────────────────────────────────────────────────────────────────
+\usepackage[a4paper, margin=2.5cm]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{parskip}
+\usepackage{microtype}
+\usepackage{multirow}
+\usepackage[style=ieee, backend=bibtex]{biblatex}
+\addbibresource{references.bib}
+
+% ─── Colours ───────────────────────────────────────────────────────────────────
+\definecolor{accentblue}{RGB}{30, 100, 180}
+\hypersetup{colorlinks=true, linkcolor=accentblue,
+            citecolor=accentblue, urlcolor=accentblue}
+
+% ─── Custom commands ───────────────────────────────────────────────────────────
+\newcommand{\KL}{\mathrm{KL}}
+\newcommand{\JSD}{\mathrm{JSD}}
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+
+% ─── Title block ───────────────────────────────────────────────────────────────
+\title{%
+  \vspace{-1cm}
+  {\large DNN 3rd Year Course Project}\\[0.4em]
+  {\LARGE\bfseries Predicting Human Annotator Disagreement\\
+  in Image Classification}\\[0.4em]
+  {\normalsize Using Soft Labels from CIFAR-10H}
+}
+\author{%
+  \todo{Team Name}\\
+  \small\textit{\todo{University / Department}}
+}
+\date{\today}
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section*{Abstract}
+\addcontentsline{toc}{section}{Abstract}
+
+Human annotators often disagree when labelling ambiguous images, and this
+disagreement carries meaningful information about visual uncertainty.
+Standard deep neural networks trained with hard (one-hot) labels discard
+this signal entirely.
+In this work we frame annotator disagreement prediction as a
+\emph{soft-label regression} task: given a CIFAR-10 image, predict the full
+probability distribution over classes that a crowd of human annotators would
+assign.
+We use the CIFAR-10H dataset~\cite{peterson2019human}, which provides
+per-image soft-label distributions derived from ${\sim}51$ annotators per
+image, and train ResNet-18 backbones adapted for $32{\times}32$ inputs.
+
+We systematically compare three loss functions — KL divergence, Jensen–Shannon
+divergence (JSD), and a custom entropy-calibrated KL loss — and evaluate them
+on distribution-matching metrics (KL, JSD, cosine similarity) as well as
+entropy-prediction quality (Pearson~$r$, Spearman~$r$, Precision@$K$).
+Ablation studies examine the effect of backbone initialisation and prediction
+head architecture.
+Explainability is provided through Grad-CAM visualisations and systematic
+failure-case analysis.
+Our results show that \todo{brief key finding, e.g.\ ``the custom
+entropy-calibrated loss achieves the best entropy-prediction Pearson~$r$ of
+\textbf{X.XX} while remaining competitive on distribution-matching''}.
+
+\newpage
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{Introduction}
+
+Deep learning classifiers are typically trained to predict a single ``correct''
+label for every training example.
+Yet many real-world images are genuinely ambiguous: a blurry small animal
+could be a cat \emph{or} a dog; an aerial vehicle might be confused for a
+bird.
+When a large crowd of independent annotators labels such images, the resulting
+\emph{label distribution} is non-trivial — it encodes collective human
+uncertainty about the visual content.
+
+\subsection{Problem Statement}
+
+Given an image $\mathbf{x} \in \mathbb{R}^{32 \times 32 \times 3}$, we wish
+to learn a model $f_\theta$ that predicts a probability distribution
+$\hat{p} \in \Delta^9$ (the 9-simplex) over the ten CIFAR-10 classes.
+The ground-truth target $p$ is the empirical distribution of human annotator
+responses, obtained from CIFAR-10H.
+Unlike standard classification, the model must capture not only \emph{which}
+class is most likely but also \emph{how uncertain} humans are — i.e., the
+entropy $H(p)$ of the distribution.
+
+\subsection{Why Annotator Disagreement Matters}
+
+Peterson et al.~\cite{peterson2019human} showed that training on soft labels
+derived from human uncertainty improves out-of-distribution generalisation and
+model calibration.
+Predicting \emph{where} annotators will disagree is valuable for:
+\begin{itemize}[noitemsep]
+  \item Active learning — prioritising images that are most confusing to humans;
+  \item Data quality auditing — flagging ambiguous samples before labelling;
+  \item Uncertainty quantification — informing downstream risk-sensitive decisions.
+\end{itemize}
+
+\subsection{Contributions}
+
+\begin{enumerate}[noitemsep]
+  \item A systematic comparison of three loss functions for soft-label regression
+        on CIFAR-10H, including a novel entropy-calibrated KL loss.
+  \item Ablation studies over backbone initialisation (random, ImageNet,
+        CIFAR-10 pretrained) and prediction head architecture.
+  \item Robustness analysis under annotator subsampling and OOD image corruptions.
+  \item Qualitative analysis via Grad-CAM and manual inspection of high-entropy
+        failure cases.
+\end{enumerate}
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{Related Work}
+
+\subsection{Soft Labels and Label Smoothing}
+
+Label smoothing~\cite{szegedy2016rethinking} replaces hard one-hot targets
+with a smoothed distribution $p' = (1-\epsilon)\,p + \epsilon/K$ to improve
+calibration.
+Soft labels as used here differ: they are \emph{data-driven}, reflecting real
+human uncertainty rather than a uniform prior.
+
+\subsection{Knowledge Distillation}
+
+Hinton et al.~\cite{hinton2015distilling} introduced ``dark knowledge'' —
+the soft output distributions of a large teacher model carry richer signal
+than hard labels.
+Our setting is analogous but the ``teacher'' is the crowd of human annotators
+rather than another neural network.
+
+\subsection{CIFAR-10H}
+
+Peterson et al.~\cite{peterson2019human} collected CIFAR-10H by recruiting
+workers on Amazon Mechanical Turk to label the 10,000 CIFAR-10 test images.
+Each image received ${\sim}51$ independent responses.
+The resulting $10{,}000 \times 10$ probability matrix captures fine-grained
+human uncertainty at scale.
+Training on these soft labels was shown to produce models that generalise
+better under distribution shift.
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{Dataset}
+
+\subsection{CIFAR-10H Description}
+
+CIFAR-10H~\cite{peterson2019human} provides a $10{,}000 \times 10$ matrix of
+soft-label probability distributions, one row per image, corresponding to the
+10,000 images in the CIFAR-10 \emph{test} set.
+Each row sums to 1 and encodes the fraction of annotators who assigned each of
+the ten class labels.
+
+\subsection{Data Split}
+
+The 10,000 annotated images were split with a fixed random seed
+(\texttt{SEED=42}) as follows:
+
+\begin{table}[H]
+\centering
+\caption{Dataset split sizes.}
+\label{tab:splits}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Split} & \textbf{Images} & \textbf{Fraction} \\
+\midrule
+Train & 6{,}000 & 60\% \\
+Validation & 2{,}000 & 20\% \\
+Test & 2{,}000 & 20\% \\
+\midrule
+Total & 10{,}000 & 100\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Indices were saved to \texttt{data/processed/\{train,val,test\}\_idx.npy} to
+ensure reproducibility across all experiments.
+
+\subsection{Exploratory Data Analysis}
+
+\subsubsection{Entropy Distribution}
+
+We compute the Shannon entropy $H(p) = -\sum_{k} p_k \log_2 p_k$ for every
+image's soft label distribution.
+Figure~\ref{fig:entropy_hist} shows that the vast majority of images have very
+low entropy, indicating that annotators strongly agreed on a single label.
+A long tail of higher-entropy images represents genuinely ambiguous cases.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.72\textwidth]{figures/entropy_histogram.png}
+  \caption{%
+    Distribution of Shannon entropy across all 10,000 CIFAR-10H images.
+    Most images have entropy near zero (near-unanimous annotator agreement),
+    while a small fraction reaches entropies above 1.5 bits, indicating
+    substantial disagreement.
+  }
+  \label{fig:entropy_hist}
+\end{figure}
+
+\subsubsection{Per-Class Mean Entropy}
+
+Figure~\ref{fig:per_class_entropy} shows mean annotator entropy broken down by
+true CIFAR-10 label.
+\emph{Deer} and \emph{cat} exhibit the highest mean disagreement, likely due
+to visual similarity to other animal classes (\emph{dog}, \emph{bird}).
+\emph{Horse} and \emph{automobile} are the easiest to identify, with
+consistently low entropy across annotators.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.72\textwidth]{figures/mean_entropy_per_class.png}
+  \caption{%
+    Mean Shannon entropy per CIFAR-10 class.
+    Animal classes (deer, cat, bird, dog) exhibit higher annotator disagreement
+    than vehicle classes (automobile, horse, ship, truck),
+    reflecting their greater visual ambiguity.
+  }
+  \label{fig:per_class_entropy}
+\end{figure}
+
+\subsubsection{Human Confusion Matrix}
+
+Figure~\ref{fig:confusion} shows the average annotator distribution per true
+class — a soft analogue of a confusion matrix.
+Each row is normalised to sum to 1.
+The strong diagonal confirms that annotators are generally accurate;
+off-diagonal mass concentrates on semantically similar classes
+(e.g.\ cat/dog, deer/horse, airplane/bird).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.72\textwidth]{figures/human_confusion_matrix.png}
+  \caption{%
+    Human confusion matrix: each cell $(i,j)$ is the average probability mass
+    that annotators assigned to class $j$ when the true label was class $i$.
+    High diagonal values (${\geq}0.90$) confirm strong annotator accuracy;
+    non-zero off-diagonal entries reveal consistent confusions between
+    visually similar categories.
+  }
+  \label{fig:confusion}
+\end{figure}
+
+\subsubsection{Low- and High-Entropy Examples}
+
+Figure~\ref{fig:entropy_examples} contrasts example images at the extremes of
+the entropy distribution.
+Low-entropy images contain a single clear, centred object, leaving no
+ambiguity for annotators.
+High-entropy images are cluttered, low-resolution, or depict objects at class
+boundaries.
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[b]{0.38\textwidth}
+    \includegraphics[width=\textwidth]{figures/low_entropy_example.png}
+    \caption{Low entropy ($H=0.00$): unambiguous ship.}
+  \end{subfigure}
+  \hspace{1.5em}
+  \begin{subfigure}[b]{0.38\textwidth}
+    \includegraphics[width=\textwidth]{figures/high_entropy_example.png}
+    \caption{High entropy ($H=2.27$): cluttered scene with multiple possible labels.}
+  \end{subfigure}
+  \caption{%
+    Contrasting examples from the entropy extremes of CIFAR-10H.
+    The low-entropy image (left) receives unanimous annotator agreement;
+    the high-entropy image (right) elicits substantial disagreement due to
+    visual ambiguity and scene clutter.
+  }
+  \label{fig:entropy_examples}
+\end{figure}
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{Methodology}
+
+\subsection{Data Pipeline}
+
+Raw CIFAR-10 test images were paired with their corresponding CIFAR-10H soft
+labels by index alignment (no shuffling required, as both datasets share the
+same ordering).
+Training images were augmented with random horizontal flips and random crops
+($32{\times}32$ with padding 4); no colour jitter or rotation was applied, as
+these could alter the visual ambiguity properties that drive annotator
+disagreement.
+Test images used only centre-crop normalisation.
+All pixel values were normalised using CIFAR-10 channel statistics:
+$\mu = (0.491, 0.482, 0.447)$, $\sigma = (0.202, 0.199, 0.201)$.
+
+\subsection{Model Architecture}
+
+\subsubsection{Backbone}
+
+We use ResNet-18~\cite{he2016deep} as our backbone, adapted for
+$32{\times}32$ CIFAR inputs.
+The standard ImageNet ResNet-18 applies a $7{\times}7$ convolution with
+stride 2 followed by max-pooling, which would reduce $32{\times}32$ feature
+maps to $8{\times}8$ after the stem — collapsing too much spatial detail.
+We replace this with a $3{\times}3$ stride-1 convolution and remove the
+max-pool layer, keeping the spatial resolution at $32{\times}32$ through the
+stem.
+Global average pooling then reduces the final $4{\times}4$ feature maps to a
+512-dimensional feature vector.
+
+\subsubsection{Prediction Head}
+
+Three head architectures are compared in ablation:
+\begin{itemize}[noitemsep]
+  \item \textbf{Linear}: a single fully-connected layer ($512 \to 10$).
+  \item \textbf{MLP}: two-layer network ($512 \to 256 \to 10$) with ReLU and
+        Dropout(0.3).
+  \item \textbf{Temperature-scaled}: linear layer with a learnable scalar
+        temperature $T$ applied before softmax.
+\end{itemize}
+All heads are followed by a softmax activation, so the model always outputs a
+valid probability distribution.
+
+\subsubsection{Architecture Diagram}
+
+Figure~\ref{fig:arch} illustrates the full forward pass.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{figures/resnet_cifar_architecture.pdf}
+  \caption{%
+    Model architecture.
+    A $32{\times}32{\times}3$ image enters the adapted Conv1 block
+    ($3{\times}3$, stride 1, no max-pool), passes through the four residual
+    stages of ResNet-18, is collapsed by global average pooling to a
+    512-dimensional feature vector, and is projected to a 10-dimensional
+    probability distribution via the prediction head and softmax.
+  }
+  \label{fig:arch}
+\end{figure}
+
+\subsubsection{Parameter Count}
+
+\begin{table}[H]
+\centering
+\caption{Parameter count for each model variant.}
+\label{tab:params}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Model variant} & \textbf{Total params} & \textbf{Trainable params} \\
+\midrule
+ResNet-18 + Linear head     & \todo{X,XXX,XXX} & \todo{X,XXX,XXX} \\
+ResNet-18 + MLP head        & \todo{X,XXX,XXX} & \todo{X,XXX,XXX} \\
+ResNet-18 + Temp.-scaled    & \todo{X,XXX,XXX} & \todo{X,XXX,XXX} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Loss Functions}
+
+All loss functions operate on the predicted distribution
+$\hat{p} = f_\theta(\mathbf{x})$ and the target soft label $p$.
+
+\subsubsection{Loss 1 — KL Divergence}
+
+\begin{equation}
+  \mathcal{L}_{\KL}(\hat{p},\, p) \;=\;
+  \KL(p \,\|\, \hat{p}) \;=\;
+  \sum_{k=1}^{K} p_k \log \frac{p_k}{\hat{p}_k}
+  \label{eq:kl}
+\end{equation}
+
+KL divergence is asymmetric: it heavily penalises cases where the model
+assigns near-zero probability to a class that received non-negligible human
+votes.
+This makes it a natural fit for our task, as missing a class that annotators
+frequently chose is a qualitatively worse error than over-spreading mass.
+All distributions are clipped to $\min = 10^{-8}$ to avoid $\log(0)$.
+
+\subsubsection{Loss 2 — Jensen--Shannon Divergence}
+
+\begin{equation}
+  \mathcal{L}_{\JSD}(\hat{p},\, p) \;=\;
+  \frac{1}{2}\,\KL\!\left(p \,\Big\|\, m\right) \;+\;
+  \frac{1}{2}\,\KL\!\left(\hat{p} \,\Big\|\, m\right),
+  \quad m = \tfrac{1}{2}(p + \hat{p})
+  \label{eq:jsd}
+\end{equation}
+
+JSD is symmetric and bounded in $[0, \ln 2]$, which makes it more numerically
+stable than KL when either distribution has near-zero entries.
+It avoids the infinite-penalty issue that arises in $\KL(p\|\hat{p})$ when
+$\hat{p}_k \to 0$ for some class $k$ with $p_k > 0$.
+
+\subsubsection{Loss 3 — Custom: Entropy-Calibrated KL}
+
+\begin{equation}
+  \mathcal{L}_{\mathrm{custom}}(\hat{p},\, p)
+  \;=\;
+  \KL(p \,\|\, \hat{p})
+  \;+\;
+  \alpha \cdot \bigl[H(\hat{p}) - H(p)\bigr]^2,
+  \quad H(q) = -\textstyle\sum_k q_k \log q_k
+  \label{eq:custom}
+\end{equation}
+
+with $\alpha = 0.5$.
+The second term adds an explicit \emph{entropy calibration penalty}: beyond
+matching the shape of the distribution, the model is penalised for predicting
+the wrong level of annotator uncertainty.
+A model that identifies the dominant class correctly but underestimates how
+spread-out the human votes were incurs an extra penalty proportional to the
+squared entropy error.
+This is motivated by the observation that the degree of disagreement (not just
+its direction) is the primary quantity of interest for downstream applications.
+
+\subsection{Training Protocol}
+
+To ensure fair comparison, \emph{only the loss function varies} across the
+three main experiments.
+All other components are fixed as shown in Table~\ref{tab:training}.
+
+\begin{table}[H]
+\centering
+\caption{Fixed training hyperparameters used in all main experiments.}
+\label{tab:training}
+\begin{tabular}{ll}
+\toprule
+\textbf{Component} & \textbf{Value} \\
+\midrule
+Optimiser              & Adam ($\beta_1=0.9$, $\beta_2=0.999$) \\
+Learning rate          & $10^{-3}$ \\
+Weight decay           & $10^{-4}$ \\
+LR schedule            & CosineAnnealingLR \\
+Batch size             & 64 \\
+Max epochs             & 150 \\
+Early stopping         & Patience 15 (monitored on val loss) \\
+Augmentation           & RandomHorizontalFlip + RandomCrop(32, pad=4) \\
+Backbone init          & CIFAR-10 hard-label pretrained \\
+Random seed            & 42 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{Experiments}
+
+\subsection{Training Curves}
+
+Figures~\ref{fig:curves_kl}--\ref{fig:curves_custom} show the training and
+validation loss curves alongside the validation JSD trajectory for each loss
+function.
+
+In all three cases the training loss decreases smoothly, demonstrating that
+each objective is optimisable.
+The validation loss exhibits moderate fluctuation, characteristic of the
+small dataset size (6,000 training images).
+The KL-trained model converges fastest and achieves the lowest raw loss
+values, but operates on a different scale to JSD and the custom loss.
+The custom entropy-calibrated model shows the highest raw loss due to the
+additional entropy penalty term, but we evaluate models on a common held-out
+metric (JSD and entropy correlations) in Section~\ref{sec:eval}.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{figures/training_curves_kl.png}
+  \caption{%
+    Training and validation KL divergence loss (left) and validation JSD
+    (right) for the model trained with $\mathcal{L}_{\KL}$.
+    The train/val gap stabilises around epoch 10, after which the model is
+    selected by early stopping on validation loss.
+  }
+  \label{fig:curves_kl}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{figures/training_curves_jsd.png}
+  \caption{%
+    Training and validation JSD loss (left) and validation JSD (right) for
+    the model trained with $\mathcal{L}_{\JSD}$.
+    The slower convergence compared to KL (requiring ${\sim}27$ epochs before
+    early stopping) reflects the bounded, symmetric nature of JSD.
+  }
+  \label{fig:curves_jsd}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{figures/training_curves_custom.png}
+  \caption{%
+    Training and validation loss (left) and validation JSD (right) for the
+    model trained with $\mathcal{L}_{\mathrm{custom}}$ (entropy-calibrated KL,
+    $\alpha=0.5$).
+    The higher absolute loss values relative to KL reflect the additional
+    entropy penalty term; convergence is faster (early stopping at epoch
+    ${\sim}15$) due to the richer gradient signal.
+  }
+  \label{fig:curves_custom}
+\end{figure}
+
+\subsection{Core Evaluation}
+\label{sec:eval}
+
+All models are evaluated on the held-out test split (2,000 images) after
+loading the best checkpoint (lowest validation loss).
+We report six metrics computed over the full test set.
+
+\subsubsection{Metric Definitions}
+
+\paragraph{KL Divergence} $\KL(p \| \hat{p})$ as defined in
+Equation~\eqref{eq:kl}. Lower is better.
+
+\paragraph{Jensen--Shannon Divergence} $\JSD(p, \hat{p})$ as defined in
+Equation~\eqref{eq:jsd}, computed via \texttt{scipy.spatial.distance.jensenshannon}
+(squared). Lower is better.
+
+\paragraph{Cosine Similarity}
+$\cos(p, \hat{p}) = p \cdot \hat{p} / (\|p\| \|\hat{p}\|)$.
+Higher is better.
+
+\paragraph{Pearson $r$} Pearson correlation between per-image true entropies
+$H(p_i)$ and predicted entropies $H(\hat{p}_i)$ across the test set.
+Measures whether the model correctly ranks images by their degree of
+disagreement. Higher is better.
+
+\paragraph{Spearman $\rho$} Rank-order correlation of the same entropy pairs.
+Robust to outliers. Higher is better.
+
+\paragraph{Precision@$K$}
+The fraction of the $K$ most disagreement-prone images by predicted entropy
+that are truly in the top-$K$ by annotator entropy.
+Evaluated at $K \in \{100, 200, 500\}$.
+
+\subsubsection{Results}
+
+\begin{table}[H]
+\centering
+\caption{%
+  Test-set evaluation metrics for each loss function.
+  Best result per column is \textbf{bolded}.
+  $\downarrow$ = lower is better; $\uparrow$ = higher is better.
+}
+\label{tab:results}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lcccccccc}
+\toprule
+\textbf{Loss} & \textbf{KL}$\downarrow$ & \textbf{JSD}$\downarrow$ &
+\textbf{Cos}$\uparrow$ & \textbf{Pearson}$\uparrow$ &
+\textbf{Spearman}$\uparrow$ &
+\textbf{P@100}$\uparrow$ & \textbf{P@200}$\uparrow$ & \textbf{P@500}$\uparrow$ \\
+\midrule
+KL Divergence          & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
+Jensen--Shannon        & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
+Custom (KL + Entropy)  & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Entropy Scatter Plot}
+
+\todo{Insert entropy scatter plot (predicted vs.\ true entropy on test set,
+with diagonal reference line and Pearson r annotation) once evaluation is
+complete. Save as \texttt{figures/entropy\_scatter.png}.}
+
+% Uncomment when figure is ready:
+%\begin{figure}[H]
+%  \centering
+%  \includegraphics[width=0.55\textwidth]{figures/entropy_scatter.png}
+%  \caption{%
+%    Predicted vs.\ true Shannon entropy for all 2,000 test images under the
+%    best-performing model.
+%    The dashed red line indicates perfect prediction.
+%    Pearson $r = \todo{X.XXX}$ indicates \todo{strong/moderate/weak}
+%    correlation between predicted and actual annotator disagreement.
+%  }
+%  \label{fig:entropy_scatter}
+%\end{figure}
+
+\subsubsection{Qualitative Examples}
+
+\todo{%
+  Insert a $3 \times 5$ grid of example test images (5 low-, 5 medium-,
+  5 high-entropy) once evaluation is complete, each with true and predicted
+  distribution bar charts.
+  Save as \texttt{figures/qualitative\_examples.png}.
+}
+
+% ─── Ablations ─────────────────────────────────────────────────────────────────
+\subsection{Ablation Studies}
+
+\subsubsection{Ablation A — Backbone Initialisation}
+
+We train the same model (ResNet-18, linear head, KL loss) under three
+initialisation strategies and report test JSD in Table~\ref{tab:ablation_init}.
+
+\begin{table}[H]
+\centering
+\caption{%
+  Effect of backbone initialisation on test JSD.
+  The best result is \textbf{bolded}.
+}
+\label{tab:ablation_init}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Initialisation} & \textbf{JSD}$\downarrow$ & \textbf{Pearson $r$}$\uparrow$ \\
+\midrule
+Random                 & \todo{} & \todo{} \\
+ImageNet pretrained    & \todo{} & \todo{} \\
+CIFAR-10 pretrained    & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\todo{Fill in numbers and add 1--2 sentences of analysis.}
+
+\subsubsection{Ablation B — Prediction Head Architecture}
+
+\begin{table}[H]
+\centering
+\caption{Effect of prediction head architecture on test JSD (KL loss, CIFAR-10 init).}
+\label{tab:ablation_head}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Head} & \textbf{JSD}$\downarrow$ & \textbf{Pearson $r$}$\uparrow$ \\
+\midrule
+Linear              & \todo{} & \todo{} \\
+MLP (2-layer)       & \todo{} & \todo{} \\
+Temperature-scaled  & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\todo{Fill in numbers and add 1--2 sentences of analysis.}
+
+\subsubsection{Ablation C — Training Data Strategy}
+
+\begin{table}[H]
+\centering
+\caption{%
+  Effect of training data strategy on test JSD.
+  Strategy 1: train on soft labels only.
+  Strategy 2: pretrain on 50k hard labels, then fine-tune on soft labels.
+}
+\label{tab:ablation_data}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Strategy} & \textbf{JSD}$\downarrow$ & \textbf{Pearson $r$}$\uparrow$ \\
+\midrule
+Soft labels only             & \todo{} & \todo{} \\
+Hard-label pretrain + finetune & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\todo{Fill in numbers and analysis.}
+
+% ─── Robustness ────────────────────────────────────────────────────────────────
+\subsection{Robustness Checks}
+
+\subsubsection{Check A — Annotator Subsampling}
+
+To simulate scenarios with fewer annotators, we re-compute soft labels by
+subsampling $k \in \{5, 10, 20, 35, 51\}$ annotators per image from the raw
+CIFAR-10H response matrix and measure the JSD between subsampled and
+full-annotator distributions.
+
+\todo{Insert annotator subsampling plot (mean JSD vs.\ $k$ annotators).}
+
+\subsubsection{Check B — OOD Corruptions}
+
+We apply Gaussian noise, Gaussian blur, and contrast reduction at five
+severity levels to the test images and measure mean predicted entropy at each
+severity level.
+A well-calibrated model should predict higher entropy as corruptions increase
+(more uncertain inputs).
+
+\todo{Insert OOD corruption plot (severity vs.\ mean predicted entropy, one
+line per corruption type).}
+
+% ─── Explainability ────────────────────────────────────────────────────────────
+\subsection{Explainability Analysis}
+
+\subsubsection{Grad-CAM Visualisations}
+
+Gradient-weighted Class Activation Maps (Grad-CAM)~\cite{selvaraju2017gradcam}
+were computed using the last convolutional layer of the ResNet-18 backbone.
+
+\todo{Insert Grad-CAM panel: 5 low-entropy images (left) and 5 high-entropy
+images (right), each with the heatmap overlaid. Discuss whether attention is
+focused (low entropy) vs.\ diffuse (high entropy).}
+
+\subsubsection{Failure Case Analysis}
+
+\todo{%
+  Present the 5--10 images with highest per-image KL divergence between
+  prediction and ground truth.
+  For each: show image, true distribution, predicted distribution, and
+  a brief hypothesis for why the model failed.
+}
+
+\subsubsection{Manual Disagreement Source Analysis}
+
+We manually inspected the top 50 highest-entropy test images and assigned each
+to one of five categories of disagreement source.
+
+\begin{table}[H]
+\centering
+\caption{Manual categorisation of the 50 highest-entropy CIFAR-10H images.}
+\label{tab:manual}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Category} & \textbf{Count} & \textbf{Percentage} \\
+\midrule
+Ambiguous identity    & \todo{} & \todo{}\% \\
+Poor image quality    & \todo{} & \todo{}\% \\
+Multi-object scene    & \todo{} & \todo{}\% \\
+Class boundary case   & \todo{} & \todo{}\% \\
+Other                 & \todo{} & \todo{}\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\todo{Insert pie chart of category distribution as \texttt{figures/manual\_analysis\_pie.png}.}
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{Discussion}
+
+\subsection{What Worked}
+
+\todo{%
+  Summarise 2--3 findings that held up clearly in experiments.
+  E.g.: ``The custom entropy-calibrated loss consistently achieved better
+  Pearson $r$ across all three ablation conditions, confirming that explicitly
+  supervising the entropy level provides a useful gradient signal beyond
+  distribution shape.''
+}
+
+\subsection{What Did Not Work and Why}
+
+\todo{%
+  Be honest about negative results.
+  E.g.: ``The MLP head did not outperform the linear head, suggesting that the
+  feature representations from the pretrained backbone are already
+  well-linearly-separable for this task.''
+  Or: ``Predicted entropy did not consistently increase with OOD corruption
+  severity; we hypothesise that BatchNorm statistics make the backbone
+  insensitive to additive Gaussian noise.''
+}
+
+\subsection{Limitations}
+
+\begin{itemize}[noitemsep]
+  \item Training size is limited to 6,000 images; results may not generalise
+        beyond CIFAR-10H.
+  \item Soft labels are an empirical estimate of the ``true'' human distribution
+        and depend on the specific annotator pool and task interface.
+  \item The custom loss introduces a hyperparameter $\alpha$ that was not
+        exhaustively tuned; optimal $\alpha$ may differ.
+  \item \todo{Add any further limitations identified during experiments.}
+\end{itemize}
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\section{Conclusion}
+
+We have presented a systematic study of soft-label regression for predicting
+human annotator disagreement on CIFAR-10H.
+Our adapted ResNet-18 architecture, combined with \todo{best loss name},
+achieves \todo{key metric value}, demonstrating that neural networks can learn
+meaningful signals about image-level visual ambiguity from crowd-sourced label
+distributions.
+
+The entropy-calibrated KL loss provides an explicit mechanism to supervise the
+\emph{degree} of disagreement, not just its direction, and \todo{shows
+improvement / remains competitive} on entropy-prediction metrics.
+Grad-CAM analysis reveals that the model \todo{focuses on / struggles with}
+\todo{specific finding from GradCAM}.
+
+Future work could explore richer label-distribution models (e.g.\ Dirichlet
+priors), larger backbone architectures, or extension to other ambiguous
+datasets beyond CIFAR-10H.
+
+% ═══════════════════════════════════════════════════════════════════════════════
+\printbibliography
+
+\newpage
+\appendix
+
+\section{Hyperparameter Configuration}
+\label{app:config}
+
+\begin{table}[H]
+\centering
+\caption{Complete hyperparameter configuration (\texttt{config.py}).}
+\label{tab:config}
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+\texttt{SEED}                     & 42 \\
+\texttt{BATCH\_SIZE}               & 64 \\
+\texttt{LR}                       & $10^{-3}$ \\
+\texttt{WEIGHT\_DECAY}             & $10^{-4}$ \\
+\texttt{EPOCHS}                   & 150 \\
+\texttt{EARLY\_STOPPING\_PATIENCE} & 15 \\
+\texttt{CIFAR10H\_TRAIN\_SIZE}     & 6{,}000 \\
+\texttt{CIFAR10H\_VAL\_SIZE}       & 2{,}000 \\
+\texttt{CIFAR10H\_TEST\_SIZE}      & 2{,}000 \\
+\texttt{ENTROPY\_ALPHA}           & 0.5 (custom loss only) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Additional Figures}
+\label{app:figs}
+
+\todo{Place any supplementary figures here (e.g.\ additional Grad-CAM panels,
+extended failure case grids, full ablation grouped bar charts).}
+
+\end{document}

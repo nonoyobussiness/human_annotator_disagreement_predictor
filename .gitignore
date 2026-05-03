@@ -21,8 +21,13 @@ Thumbs.db
 # Large / unnecessary files
 data/raw/archive.zip
 
-# Optional: ignore checkpoints (they can get big)
-checkpoints/
+# Ignore checkpoints by default, but keep the notebook-required weights tracked
+checkpoints/*
+!checkpoints/backbone_cifar10_pretrained.pt
+!checkpoints/best_model_kl.pt
+!checkpoints/best_model _kl.pt
+!checkpoints/best_model_jsd.pt
+!checkpoints/best_model_custom.pt
 
 # Optional: ignore processed data if large
 # data/processed/
