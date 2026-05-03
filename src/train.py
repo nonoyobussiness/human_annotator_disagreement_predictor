@@ -11,6 +11,8 @@ from src.losses import js_divergence_loss, kl_divergence_loss
 from src.model import DissagreementPredictor
 from src.utils import set_seed
 
+PRETRAINED_BACKBONE_PATH = "checkpoints/backbone_cifar10_pretrained.pt"
+
 
 def load_cifar_batch(batch_path):
     with warnings.catch_warnings():
@@ -96,6 +98,17 @@ def train_model(model, train_loader, val_loader, loss_fn, device, save_path="che
     return history
 
 
+def load_pretrained_backbone(model, backbone_path=PRETRAINED_BACKBONE_PATH, device="cpu"):
+    if not os.path.exists(backbone_path):
+        raise FileNotFoundError(
+            f"Missing pretrained backbone at '{backbone_path}'. "
+            "Run `python -m src.pretrain_cifar10` first."
+        )
+
+    state_dict = torch.load(backbone_path, map_location=device)
+    model.backbone.load_state_dict(state_dict)
+
+
 def main():
     set_seed(SEED)
 
@@ -107,6 +120,7 @@ def main():
     train_loader, val_loader, _ = get_dataloaders(images, probs, batch_size=BATCH_SIZE)
 
     model = DissagreementPredictor().to(device)
+    load_pretrained_backbone(model, device=device)
     train_model(model, train_loader, val_loader, kl_divergence_loss, device)
 
     print("Training complete!")
