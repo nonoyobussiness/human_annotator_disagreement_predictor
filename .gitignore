@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Large / unnecessary files
+data/raw/archive.zip
+
+# Optional: ignore checkpoints (they can get big)
+checkpoints/
+
+# Optional: ignore processed data if large
+# data/processed/
