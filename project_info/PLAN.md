@@ -815,15 +815,16 @@ Inspect the **top 30–50 highest-entropy images** manually (open them one by on
 
 | Category | Description |
 |---|---|
-| **Ambiguous identity** | The object genuinely looks like multiple classes |
-| **Poor image quality** | Blurry, dark, low contrast |
+| **Ambiguous identity** | The object itself is confusing - even a human might hesitate |
+| **Poor image quality** | Blurry, dark, low contrast - image quality is the problem not the object |
 | **Multi-object** | Two or more CIFAR classes visible |
-| **Boundary case** | Object is at the edge between two semantically close classes |
+| **Boundary case** | Image is clear but the classes are very similar |
 | **Other** | Any other reason |
 
 > ⚠️ **Viva requirement:** Every team member must do this personally for at least 5–10 images. You will be asked about specific images during the viva. Do not delegate this entirely to one person.
 
 Create a summary table and pie chart of category distribution.
+
 
 ---
 
