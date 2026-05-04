@@ -1,33 +1,32 @@
-# Python
+# Python cache
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
 
-# Virtual environment
+# Virtual environments
 venv/
+.venv/
+env/
 .env/
 
 # Jupyter
 .ipynb_checkpoints/
 
-# OS files
+# OS / editor clutter
 .DS_Store
 Thumbs.db
-
-# Logs
 *.log
 
-# Large / unnecessary files
-data/raw/archive.zip
+# Data and model artifacts
+data/raw/
+checkpoints/
+*.pt
+*.pth
+*.zip
 
-# Ignore checkpoints by default, but keep the notebook-required weights tracked
-checkpoints/*
-!checkpoints/backbone_cifar10_pretrained.pt
-!checkpoints/best_model_kl.pt
-!checkpoints/best_model _kl.pt
-!checkpoints/best_model_jsd.pt
-!checkpoints/best_model_custom.pt
+# Keep submission assets visible
+!figures/
+!notebooks/
+!reports/
+!src/
 
-# Optional: ignore processed data if large
-# data/processed/
+.codex
